@@ -110,21 +110,21 @@ def is_free(self, pos):
 # solver.py:18-36
 def solve(layout, rows, cols):
     """layout 是 {位置: 方向} 的字典，返回一个清空棋盘的点击顺序，无解返回 None。"""
-    memo = {}
+    memo = {}                     # 局面 -> 该局面的解；值是 None 表示"这个局面已试过且无解"
 
     def dfs(state):
-        if not state:
+        if not state:             # 空盘：箭头已经全部清完
             return []
-        if state in memo:
+        if state in memo:         # 同一个局面（剩同样几根箭头）算过，直接复用结果
             return memo[state]
-        memo[state] = None
+        memo[state] = None        # 先占位，防止同一个局面被重复展开
         for pos in sorted(state):
-            if free_in(state, layout, pos, rows, cols):
+            if free_in(state, layout, pos, rows, cols):      # 只尝试当前能飞出的箭头
                 rest = dfs(frozenset(p for p in state if p != pos))
-                if rest is not None:
+                if rest is not None:                         # 去掉它后还能清空 -> 这条分支可行
                     memo[state] = [pos] + rest
                     return memo[state]
-        return None
+        return None               # 所有箭头都试过、都不能走通：这个局面无解
 
     return dfs(frozenset(layout))
 ```
@@ -134,12 +134,12 @@ def solve(layout, rows, cols):
 ```python
 # solver.py:28-34
         for pos in sorted(state):
-            if free_in(state, layout, pos, rows, cols):
+            if free_in(state, layout, pos, rows, cols):      # 还能飞出的箭头
                 rest = dfs(frozenset(p for p in state if p != pos))
                 if rest is not None:
                     memo[state] = [pos] + rest
                     return memo[state]
-        return None
+        return None      # 一个能飞的都没有：剩余箭头互相扣成环，死局
 ```
 
 **③ 逆向构造生成关卡（保证有解）**：随机撒箭头很容易撒出互堵的死局。这里的做法反过来——**先定消除顺序，再逆着摆箭头**：新摆下的箭头只要不在已摆箭头的射线上，那么按相反顺序点就一定都能飞出，所以生成的关卡必然有解；摆完再用求解器复查一遍：
@@ -149,18 +149,18 @@ def solve(layout, rows, cols):
         for pos in cells:
             if pos in placed:
                 continue
-            for direction in rng.sample("^v<>", 4):
+            for direction in rng.sample("^v<>", 4):          # 随机试四个方向
                 ray = reachable(pos, direction, rows, cols)
-                if any(p in placed for p in ray):
+                if any(p in placed for p in ray):            # 射线被已摆好的箭头挡住就不行
                     continue
-                placed[pos] = direction
+                placed[pos] = direction                      # 摆在射线上没有任何箭头的位置
                 ok = True
                 break
             if ok:
                 break
         if not ok:
             break
-    order = solve(placed, rows, cols)
+    order = solve(placed, rows, cols)                        # 逆序摆完，再用求解器复查一遍
     assert order and len(order) == len(placed), "生成结果不可解"
 ```
 
@@ -169,8 +169,8 @@ def solve(layout, rows, cols):
 ```python
 # logic.py:47-49
         if self.is_free(pos):
-            self.history.append(pos)
-            del self.arrows[pos]
+            self.history.append(pos)      # 记下这一步，供撤销使用
+            del self.arrows[pos]          # 飞出即从棋盘字典里删除（只删不增，射线只会更空）
 ```
 
 ## 六、AIGC 使用过程
