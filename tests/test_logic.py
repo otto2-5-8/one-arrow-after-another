@@ -122,6 +122,29 @@ class TestLevelFlow(unittest.TestCase):
         self.assertEqual(app.flyers, [])
         self.assertEqual(app.elapsed, 0.0)
 
+    def test_on_click_maps_pixel_to_cell(self):
+        """点击事件的坐标换算：格子里算点中，格子缝隙里不算。"""
+        app = self.app
+        app.start_level(0)
+        self.assertEqual(app.game.free_arrows(), [(4, 2)])
+        app.on_click(app.cell_rect(4, 2).center)
+        self.assertNotIn((4, 2), app.game.arrows)
+        self.assertEqual(app.game.remaining, app.game.total - 1)
+        app.on_click(app.cell_rect(1, 2).center)
+        self.assertIn((1, 2), app.game.arrows)
+        self.assertEqual(app.game.mistakes, app.game.max_mistakes - 1)
+        gap = app.cell_rect(1, 2)
+        app.on_click((gap.right + 3, gap.centery))
+        self.assertEqual(app.game.mistakes, app.game.max_mistakes - 1)
+
+    def test_click_hint_button(self):
+        app = self.app
+        app.start_level(0)
+        app.draw()
+        button = [b for b in app.buttons if "提示" in b.label][0]
+        app.on_click(button.rect.center)
+        self.assertIn(app.hint, app.game.arrows)
+
     def test_undo_puts_arrow_back(self):
         app = self.app
         app.start_level(0)
