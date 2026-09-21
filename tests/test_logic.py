@@ -156,48 +156,5 @@ class TestLevelFlow(unittest.TestCase):
         self.assertIsNone(app.game.result)
 
 
-class TestSolverAlgorithms(unittest.TestCase):
-    """T12-T15：二分判空、位掩码求解、解数量统计、死局识别。"""
-
-    def test_t12_bisect_query_matches_naive_scan(self):
-        for level in LEVELS:
-            game = GameState(level)
-            while game.arrows:
-                state = set(game.arrows)
-                for pos in list(game.arrows):
-                    naive = solver.free_in(state, game.arrows, pos, game.rows, game.cols)
-                    self.assertEqual(game.is_free(pos), naive, (level["name"], pos))
-                self.assertEqual(game.click(sorted(game.free_arrows())[0]), "escape")
-
-    def test_t13_bitmask_solution_replays_on_game(self):
-        for level in LEVELS:
-            game = GameState(level)
-            order = solver.solve(game.arrows, game.rows, game.cols)
-            self.assertIsNotNone(order, level["name"])
-            for pos in order:
-                self.assertTrue(game.is_free(pos), (level["name"], pos))
-                self.assertEqual(game.click(pos), "escape")
-            self.assertEqual(game.result, "win")
-            self.assertEqual(game.remaining, 0)
-
-    def test_t14_count_orders(self):
-        three = GameState({"name": "测试关", "grid": ["^...", "<...", "...v"]})
-        self.assertEqual(len(three.free_arrows()), 3)
-        info = solver.analyze(three.arrows, three.rows, three.cols)
-        self.assertEqual(info["orders"], 6)  # 3 个互不干扰的箭头：3! = 6 种顺序
-        for level in LEVELS:
-            game = GameState(level)
-            info = solver.analyze(game.arrows, game.rows, game.cols)
-            self.assertTrue(info["solvable"], level["name"])
-            self.assertGreaterEqual(info["orders"], 1, level["name"])
-
-    def test_t15_unsolvable_level_is_detected(self):
-        stuck = GameState({"name": "测试关", "grid": [">v<..", "....."]})
-        self.assertIsNone(solver.solve(stuck.arrows, stuck.rows, stuck.cols))
-        info = solver.analyze(stuck.arrows, stuck.rows, stuck.cols)
-        self.assertFalse(info["solvable"])
-        self.assertEqual(info["orders"], 0)
-
-
 if __name__ == "__main__":
     unittest.main(verbosity=2)

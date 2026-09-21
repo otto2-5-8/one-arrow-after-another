@@ -65,12 +65,12 @@ python main.py
 
 ```
 main.py            游戏主程序：界面、动画、按钮
-logic.py           核心逻辑：行/列有序坐标表 + 二分判空、点击判定、失误与撤销
+logic.py           核心逻辑：路径检测、点击判定、失误与撤销
 levels.py          关卡数据（^ 上 v 下 < 左 > 右，. 空格）
-solver.py          求解器：位掩码状态压缩 + 记忆化搜索、解数量统计
-tests/test_logic.py  自动化测试（15 项，覆盖 T01-T15）
-tools/             关卡生成/校验/难度分析、自动截图脚本
-screenshots/       运行截图与演示 GIF
+solver.py          关卡求解器，用于提示和校验关卡
+tests/test_logic.py  自动化测试（T01-T06）
+tools/             关卡生成/校验、自动截图脚本
+screenshots/       运行截图
 ```
 
 ## 测试
@@ -79,11 +79,10 @@ screenshots/       运行截图与演示 GIF
 python -m unittest discover -s tests -v
 ```
 
-15 项测试全部通过，覆盖作业要求的 T01-T06（含边缘箭头越界检查），并额外校验四个方向阻挡、点击坐标换算、按钮交互、二分判空与线性扫描等价、求解器结果可回放、解数量统计、无解关卡识别，以及 5 个关卡都能通关。
+11 项测试全部通过，覆盖作业要求的 T01-T06（含边缘箭头越界检查），并额外校验点击坐标换算、按钮交互和 5 个关卡都可通关。
 
 ## 说明
 
 - 界面元素全部用代码绘制，不依赖图片素材。
-- 关卡先用 `tools/gen_levels.py` 随机生成候选（按"消除顺序的逆序"摆放，天然有解），再人工挑选调整，最后用 `tools/check_levels.py` 确认可通关。
-- `tools/analyze_levels.py` 输出每关的难度指标（初始可飞出数、通关顺序总数、求解搜索过的局面数）。
-- 截图由 `tools/run_demo_shots.ps1` 自动驱动界面生成，演示 GIF 由帧渲染 + Pillow 合成。
+- 关卡先用 `tools/gen_levels.py` 随机生成候选，再人工挑选调整，最后用 `tools/check_levels.py` 确认可通关。
+- 截图由 `tools/run_demo_shots.ps1` 自动驱动界面生成。
