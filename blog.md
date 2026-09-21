@@ -71,85 +71,27 @@ LEVELS = [{"name": "第 1 关", "mistakes": 3,
 
 界面用 `scene`（menu / game）加 `overlay`（win / lose）两个状态控制，结果面板延后 0.9 秒再弹出，等飞出动画先播完；帧循环里把单帧时间限制在 0.1 秒以内（`dt = min(clock.tick(60) / 1000, 0.1)`），避免启动时字体预加载的卡顿让动画跳一下。
 
-### 4.4 求解器：位掩码 + 记忆化搜索
-
-"这一关到底能不能过、有多少种过法"由 `solver.py` 算。做法是状态压缩：给每个箭头分配一位二进制编号，并预先算出 `blocks[i]`——第 i 个箭头射线上有哪些箭头。这样"它现在能不能飞出"就退化成一次按位与：
-
-```python
-# solver.py:43-45
-def moves(mask, blocks):
-    """当前局面下所有能飞出的箭头下标。"""
-    return [i for i, block in enumerate(blocks) if mask >> i & 1 and not block & mask]
-```
-
-搜索用记忆化，但 `memo` 里只存"这个局面选哪一步能赢"，最后沿 memo 回溯还原完整顺序，避免给每个局面都复制一整条路径：
-
-```python
-# solver.py:53-64
-def dfs(state):
-    if state == 0:
-        return True
-    if state in memo:
-        return memo[state] >= 0
-    visits[0] += 1
-    for i in moves(state, blocks):
-        if dfs(state ^ (1 << i)):
-            memo[state] = i
-            return True
-    memo[state] = -1
-    return False
-```
-
-同一套 `moves` 还能直接改成记忆化计数，数出这一关有多少种通关顺序（`ways(局面) = Σ ways(去掉一个可行箭头后的局面)`，`ways(空盘) = 1`）：
-
-```python
-# solver.py:81-88
-def ways(state):
-    if state in memo:
-        return memo[state]
-    total = 0
-    for i in moves(state, blocks):
-        total += ways(state ^ (1 << i))
-    memo[state] = total
-    return total
-```
-
-### 4.5 难度指标（`tools/analyze_levels.py` 实测）
-
-| 关卡 | 棋盘 | 箭头数 | 初始可飞出 | 通关顺序总数 | 搜索过的局面数 |
-| --- | --- | --- | --- | --- | --- |
-| 第 1 关 | 5 × 5 | 5 | 1 | 4 | 5 |
-| 第 2 关 | 5 × 5 | 7 | 5 | 1260 | 7 |
-| 第 3 关 | 6 × 6 | 10 | 4 | 18900 | 10 |
-| 第 4 关 | 6 × 6 | 13 | 6 | 10090080 | 13 |
-| 第 5 关 | 7 × 7 | 15 | 8 | 3640536900 | 15 |
-
-第 1 关一开始只有 1 个箭头能飞出，属于"找唯一着法"的教学关；第 4、5 关可选顺序上千万条，难度主要来自"看错哪根箭头能飞出"（棋盘大、箭头多，而失误次数只有 3～4 次）。另一个有意思的数据是：因为解很充足，记忆化搜索只探索了 5～15 个局面就找到了通解，连第 5 关 36 亿条顺序的精确计数也只花了几毫秒——位掩码把局面变成一个整数、memo 又只存一步，所以状态开销很低。
 
 ## 五、重点：路径检测方法
 
 ### 5.1 检测思路
 
-最直观的做法是"从箭头出发沿方向一格一格走"（线性扫描）。实现时换成了更省的做法：给**每一行、每一列各维护一张升序坐标表**，判断某个箭头能不能飞出，只要在它所在行（或列）的升序表里二分出它自己的位置，再看它前面还有没有元素——落在表头/表尾就说明一路到边界都没有箭头。上下左右只是"往前"的方向不同，所以四个方向仍然共用同一段代码。
+从箭头所在格子出发，沿它朝着的方向一格一格地走：中途遇到任何箭头，说明被挡住，返回"飞不出去"；如果一直走到棋盘边界都没有箭头，说明可以飞出。上下左右只是方向向量不同，所以四个方向共用同一段代码。
 
 ### 5.2 核心代码
 
 ```python
-# logic.py:54-66
 def is_free(self, pos):
-    """箭头到棋盘边界之间没有其它箭头时返回 True。"""
     dr, dc = DIRS[self.arrows[pos]]
-    r, c = pos
-    if dr == 0:
-        line = self.row_cols[r]
-        forward = dc > 0
-        index = bisect.bisect_right(line, c) if forward else bisect.bisect_left(line, c)
-    else:
-        line = self.col_rows[c]
-        forward = dr > 0
-        index = bisect.bisect_right(line, r) if forward else bisect.bisect_left(line, r)
-    return index == len(line) if forward else index == 0
+    r, c = pos[0] + dr, pos[1] + dc
+    while 0 <= r < self.rows and 0 <= c < self.cols:
+        if (r, c) in self.arrows:
+            return False
+        r += dr
+        c += dc
+    return True
 ```
+
 
 ### 5.3 示例
 
@@ -160,55 +102,75 @@ def is_free(self, pos):
 
 ### 5.4 算法特点
 
-**① 四个方向统一处理**：方向只体现在一张方向表里，检测代码完全不区分上、下、左、右，以后加方向也不用改逻辑。
+这一节说三个"有点意思"的算法：求解器怎么判可解、关卡怎么生成，以及一个能省心的性质。
+
+**① 记忆化搜索求解器**：把"剩余箭头集合"当作状态，逐个尝试还能飞出的箭头再递归下去。`memo[state] = None` 先把当前局面标记成"暂时算不出来"，同一个局面只算一次，避免重复展开：
 
 ```python
-# logic.py:9
-DIRS = {"^": (-1, 0), "v": (1, 0), "<": (0, -1), ">": (0, 1)}
+# solver.py:18-36
+def solve(layout, rows, cols):
+    """layout 是 {位置: 方向} 的字典，返回一个清空棋盘的点击顺序，无解返回 None。"""
+    memo = {}
+
+    def dfs(state):
+        if not state:
+            return []
+        if state in memo:
+            return memo[state]
+        memo[state] = None
+        for pos in sorted(state):
+            if free_in(state, layout, pos, rows, cols):
+                rest = dfs(frozenset(p for p in state if p != pos))
+                if rest is not None:
+                    memo[state] = [pos] + rest
+                    return memo[state]
+        return None
+
+    return dfs(frozenset(layout))
 ```
 
-画箭头同样只有一套代码：只定义一次"朝上"的多边形顶点，再按角度旋转出四个方向。
+**② 死局判定：剩余箭头互相扣成环**。如果某个局面下一个箭头都飞不出去，说明剩下的箭头首尾相扣（每个都被另一个挡着），这个局面永远解不开——搜索里"所有箭头都试过、没有一个能飞出"就是死局，直接返回 `None`：
 
 ```python
-# main.py:54 / main.py:71-72
-ARROW_ANGLE = {"^": 0, ">": 90, "v": 180, "<": 270}
-
-def arrow_points(cx, cy, size, direction):
-    angle = math.radians(ARROW_ANGLE[direction])   # 四种方向共用同一组顶点
+# solver.py:28-34
+        for pos in sorted(state):
+            if free_in(state, layout, pos, rows, cols):
+                rest = dfs(frozenset(p for p in state if p != pos))
+                if rest is not None:
+                    memo[state] = [pos] + rest
+                    return memo[state]
+        return None
 ```
 
-**② 判空只要 O(log n)**：把"沿射线走一遍"换成"在同一行（或列）的升序坐标表里二分"，棋盘变大也不会退化。
+**③ 逆向构造生成关卡（保证有解）**：随机撒箭头很容易撒出互堵的死局。这里的做法反过来——**先定消除顺序，再逆着摆箭头**：新摆下的箭头只要不在已摆箭头的射线上，那么按相反顺序点就一定都能飞出，所以生成的关卡必然有解；摆完再用求解器复查一遍：
 
 ```python
-# logic.py:58-61
-if dr == 0:
-    line = self.row_cols[r]
-    forward = dc > 0
-    index = bisect.bisect_right(line, c) if forward else bisect.bisect_left(line, c)
+# tools/gen_levels.py:35-50
+        for pos in cells:
+            if pos in placed:
+                continue
+            for direction in rng.sample("^v<>", 4):
+                ray = reachable(pos, direction, rows, cols)
+                if any(p in placed for p in ray):
+                    continue
+                placed[pos] = direction
+                ok = True
+                break
+            if ok:
+                break
+        if not ok:
+            break
+    order = solve(placed, rows, cols)
+    assert order and len(order) == len(placed), "生成结果不可解"
 ```
 
-**③ 边界安全**：二分位置和表长（或 0）比较，就等价于"一路到边界都没有箭头"，不需要下标访问棋盘，也就不会越界。
+**④ 一个能省心的性质：能飞出就点，不会把自己玩死**。因为箭头只会被删除、不会新增（`del self.arrows[pos]`），别人的射线只会越来越空：只要当前局面还有解，随便点掉一个"能飞出"的箭头之后，原解法的后续步骤依然成立。所以本关不需要担心"走错一步把自己堵死"，难度只来自"看错哪根箭头能飞出"。
 
 ```python
-# logic.py:66
-return index == len(line) if forward else index == 0
-```
-
-**④ 有序表与棋盘严格同步**：放回箭头用 `insort` 保持有序，所以 `undo` 撤回一步后坐标表依然正确。
-
-```python
-# logic.py:38-39
-bisect.insort(self.row_cols.setdefault(r, []), c)
-bisect.insort(self.col_rows.setdefault(c, []), r)
-```
-
-**⑤ 只依赖"当前还在棋盘上的箭头"**：拿走箭头时同时把它从两个有序表里删掉，表里永远只有剩余箭头；所以前面的箭头清空后，原来被挡住的箭头下一次二分就落到表头/表尾，自动变成可以飞出。
-
-```python
-# logic.py:44-46
-del self.arrows[pos]
-cols = self.row_cols[r]
-cols.pop(bisect.bisect_left(cols, c))
+# logic.py:47-49
+        if self.is_free(pos):
+            self.history.append(pos)
+            del self.arrows[pos]
 ```
 
 ## 六、AIGC 使用过程
@@ -228,7 +190,7 @@ cols.pop(bisect.bisect_left(cols, c))
 python -m unittest discover -s tests -v
 ```
 
-共 15 项测试全部通过，包含作业要求的 T01-T06，以及四个方向阻挡、点击坐标换算、按钮交互、二分判空与线性扫描等价、位掩码解可回放、解数量统计、无解关卡识别、5 个关卡均可通关等补充用例。
+共 11 项测试全部通过，包含作业要求的 T01-T06，以及四个方向阻挡、点击坐标换算、按钮交互、5 个关卡均可通关等补充用例。
 
 ### 7.2 测试记录
 
@@ -244,11 +206,7 @@ python -m unittest discover -s tests -v
 | T08 | 点击"提示"按钮 | 高亮一个能飞出的箭头 | 高亮框出现在可飞出的箭头上 | 通过 |
 | T09 | 点击"撤销"按钮 | 上一步飞出的箭头回到棋盘 | 箭头回到原位，剩余数量恢复 | 通过 |
 | T10 | 5 个关卡是否都能通关 | 每关都有可通关顺序 | 求解器给出完整顺序，逐关回放每一步都合法并清空棋盘 | 通过 |
-| T11 | 干净检出后运行（git archive 解压） | 测试通过、程序可跑 | 15 项测试通过，第 1 关可以通到底 | 通过 |
-| T12 | 二分判空与线性扫描是否一致 | 两种实现结果相同 | 5 个关卡逐局面比对，结果全部一致 | 通过 |
-| T13 | 求解器给出的顺序能否真的走通 | 按顺序点击可清空棋盘 | 5 关逐步回放，每步都合法并清空 | 通过 |
-| T14 | 通关顺序总数统计是否正确 | 3 个互不干扰的箭头应为 6 种 | 实测 6 种；5 个关卡都 ≥ 1 | 通过 |
-| T15 | 无解关卡能否被识别 | 判为无解、顺序数为 0 | 互堵关卡返回 None、计数 0 | 通过 |
+| T11 | 干净检出后运行（git archive 解压） | 测试通过、程序可跑 | 11 项测试通过，第 1 关可以通到底 | 通过 |
 
 ## 八、PSP 项目计划与实际耗时
 
@@ -257,14 +215,14 @@ python -m unittest discover -s tests -v
 | 需求分析与游戏设计 | 2.0 | 1.5 | -0.5 |
 | Python 与图形库学习 | 3.0 | 2.0 | -1.0 |
 | 游戏界面实现 | 4.0 | 5.0 | +1.0 |
-| 路径与碰撞逻辑实现 | 3.0 | 3.5 | +0.5 |
+| 路径与碰撞逻辑实现 | 3.0 | 2.5 | -0.5 |
 | 关卡设计 | 2.0 | 1.5 | -0.5 |
 | AIGC 辅助开发 | 3.0 | 4.0 | +1.0 |
-| 测试与修改 | 2.0 | 3.0 | +1.0 |
+| 测试与修改 | 2.0 | 2.5 | +0.5 |
 | README 与博客撰写 | 2.0 | 1.5 | -0.5 |
-| 合计 | 21.0 | 22.0 | +1.0 |
+| 合计 | 21.0 | 20.5 | -0.5 |
 
-**PSP 分析**：AIGC 明显压缩了"学图形库"和"写框架"的时间，实际耗时反而多花在界面、测试和算法上——动画参数（飞出速度、抖动幅度、面板出现时机）要反复试，自动截图脚本调了不少次，后来又额外花了时间把判空改成二分、把求解器改成位掩码记忆化搜索并加上解数量统计；此外 AI 生成的代码不能直接用，求解器、关卡死局、属性初始化这几处都是自己跑起来才发现并修掉的。
+**PSP 分析**：AIGC 明显压缩了"学图形库"和"写框架"的时间，实际耗时反而多花在界面和测试上——动画参数（飞出速度、抖动幅度、面板出现时机）需要反复试，自动截图脚本也调了不少次；此外 AI 生成的代码不能直接用，求解器、关卡死局、属性初始化这几处都是自己跑起来才发现并修掉的。
 
 ## 九、项目特色
 
@@ -272,8 +230,7 @@ python -m unittest discover -s tests -v
 2. **四方向统一处理**：检测和绘制都只用一套代码，靠方向向量和角度旋转区分四个方向，扩展新方向不需要改逻辑。
 3. **数据与显示分离**：`logic.py` 完全不依赖 pygame，可以单独跑测试；`main.py` 只负责显示和交互。
 4. **有基本动画与完整反馈**：飞出、晃动变色、文字提示，加上通关 / 失败面板，操作结果看得见。
-5. **判空用二分而不是逐格扫描**：每行、每列各维护一张升序坐标表，射线判空是 O(log n)，棋盘变大也不退化。
-6. **求解器既是工具也是算法练习**：位掩码状态压缩 + 记忆化搜索（只存一步、回溯还原顺序），再复用同一套着法生成做记忆化计数，能精确算出每关有多少种通关顺序（第 5 关 36 亿条只算几毫秒）；既校验关卡、提供提示，又产出难度指标。
+5. **自带求解器**：既用来校验每个关卡确实能通关，也顺手做成了提示功能。
 
 ## 十、心得体会
 
