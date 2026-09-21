@@ -59,6 +59,8 @@ python main.py
 | 第 4 关 | 6 × 6 | 13 | 3 |
 | 第 5 关 | 7 × 7 | 15 | 4 |
 
+每一关的可行通关顺序见 [`docs/solutions.md`](docs/solutions.md)。
+
 ## 项目结构
 
 ```
