@@ -5,6 +5,7 @@ import sys
 
 import pygame
 
+import solver
 from levels import LEVELS
 from logic import DIRS, GameState
 
@@ -14,6 +15,7 @@ FPS = 60
 BG = (24, 28, 38)
 CARD = (37, 44, 60)
 CELL = (47, 56, 76)
+CELL_BLOCK = (92, 46, 54)
 TEXT = (233, 238, 248)
 MUTED = (146, 158, 180)
 GOLD = (247, 200, 92)
@@ -27,6 +29,9 @@ ARROW_COLORS = {
 }
 
 BOARD_AREA = (60, 150, WIDTH - 120, 460)
+SHAKE_TIME = 0.45
+SHAKE_PIXELS = 9
+OVERLAY_DELAY = 0.9
 FONT_NAMES = [
     "microsoftyaheiui",
     "microsoftyahei",
@@ -49,11 +54,18 @@ ARROW_SHAPE = [
 ARROW_ANGLE = {"^": 0, ">": 90, "v": 180, "<": 270}
 
 
+FONT_PATH = []
+
+
 def load_font(size, bold=False):
-    path = pygame.font.match_font(FONT_NAMES, bold=bold)
-    if path:
-        return pygame.font.Font(path, size)
-    return pygame.font.SysFont(None, size)
+    if not FONT_PATH:
+        FONT_PATH.append(pygame.font.match_font(FONT_NAMES) or "")
+    if FONT_PATH[0]:
+        font = pygame.font.Font(FONT_PATH[0], size)
+    else:
+        font = pygame.font.SysFont(None, size)
+    font.set_bold(bold)
+    return font
 
 
 def arrow_points(cx, cy, size, direction):
@@ -83,8 +95,18 @@ class App:
         self.running = True
         self.scene = "menu"
         self.level_index = 0
+        self.unlocked = 1
         self.game = None
         self.flyers = []
+        self.shakes = {}
+        self.toast = None
+        self.overlay = None
+        self.overlay_timer = 0.0
+        self.hint = None
+        self.hint_timer = 0.0
+        for size in (18, 20, 22, 24, 26, 30, 46, 68):
+            for bold in (False, True):
+                self.font(size, bold)
 
     def font(self, size, bold=False):
         if (size, bold) not in self.fonts:
@@ -106,7 +128,60 @@ class App:
         self.game = GameState(LEVELS[index])
         self.scene = "game"
         self.flyers = []
+        self.shakes = {}
+        self.toast = None
+        self.overlay = None
+        self.overlay_timer = 0.0
+        self.hint = None
+        self.hint_timer = 0.0
         self.elapsed = 0.0
+
+    def restart_level(self):
+        self.game.reset()
+        self.flyers = []
+        self.shakes = {}
+        self.toast = None
+        self.overlay = None
+        self.overlay_timer = 0.0
+        self.hint = None
+        self.hint_timer = 0.0
+        self.elapsed = 0.0
+
+    def use_hint(self):
+        if self.scene != "game" or self.game.result:
+            return
+        self.hint = solver.hint(self.game)
+        self.hint_timer = 2.0
+
+    def use_undo(self):
+        if self.scene != "game" or not self.game:
+            return
+        if self.game.undo():
+            self.overlay = None
+            self.overlay_timer = 0.0
+            self.hint = None
+            self.hint_timer = 0.0
+            self.toast = {"text": "撤销了一步", "color": MUTED, "timer": 1.0}
+
+    def next_level(self):
+        if self.level_index + 1 < len(LEVELS):
+            self.start_level(self.level_index + 1)
+        else:
+            self.back_to_menu()
+
+    def back_to_menu(self):
+        self.scene = "menu"
+        self.overlay = None
+        self.overlay_timer = 0.0
+        self.flyers = []
+        self.shakes = {}
+        self.toast = None
+        self.hint = None
+        self.hint_timer = 0.0
+
+    def time_text(self):
+        total = int(self.elapsed)
+        return f"{total // 60:02d}:{total % 60:02d}"
 
     def geometry(self):
         rows, cols = self.game.rows, self.game.cols
@@ -167,10 +242,23 @@ class App:
         self.draw_button(start, size=28, primary=True)
         self.text("选择关卡", 20, MUTED, center=(WIDTH // 2, 452))
         for i in range(len(LEVELS)):
+            locked = i + 1 > self.unlocked
             rect = pygame.Rect(WIDTH // 2 - 300 + i * 120, 490, 100, 62)
-            button = Button(rect, str(i + 1), (lambda idx: lambda: self.start_level(idx))(i))
-            self.draw_button(button, size=26)
-        self.text("R 重新开始    H 提示    Esc 返回菜单", 18, MUTED, center=(WIDTH // 2, 640))
+            if locked:
+                pygame.draw.rect(self.screen, CARD, rect, border_radius=12)
+                self.text(str(i + 1), 26, (84, 94, 116), center=rect.center)
+            else:
+                button = Button(
+                    rect, str(i + 1), (lambda idx: lambda: self.start_level(idx))(i)
+                )
+                self.draw_button(button, size=26)
+        self.text(
+            f"已解锁 {self.unlocked} / {len(LEVELS)} 关",
+            18,
+            MUTED,
+            center=(WIDTH // 2, 585),
+        )
+        self.text("R 重新开始    Esc 返回菜单", 18, MUTED, center=(WIDTH // 2, 640))
 
     def draw_button(self, button, size=22, primary=False):
         hover = button.rect.collidepoint(pygame.mouse.get_pos())
@@ -188,7 +276,65 @@ class App:
             MUTED,
             topleft=(60, 92),
         )
-        self.text(f"第 {self.level_index + 1} / {len(LEVELS)} 关", 22, MUTED, topleft=(320, 92))
+        self.text(f"第 {self.level_index + 1} / {len(LEVELS)} 关", 22, MUTED, topleft=(300, 92))
+        left = self.game.mistakes
+        color = DANGER if left <= 1 else MUTED
+        self.text(
+            f"剩余失误 {left} / {self.game.max_mistakes}",
+            22,
+            color,
+            topleft=(470, 92),
+        )
+        self.text(f"用时 {self.time_text()}", 22, MUTED, topleft=(700, 92))
+        if self.toast and not self.overlay:
+            self.text(
+                self.toast["text"],
+                24,
+                self.toast["color"],
+                center=(WIDTH // 2, 652),
+                bold=True,
+            )
+
+    def draw_buttons(self):
+        rect = pygame.Rect(60, 690, 170, 52)
+        for label, action in (
+            ("重新开始 (R)", self.restart_level),
+            ("提示 (H)", self.use_hint),
+            ("撤销 (Z)", self.use_undo),
+            ("返回菜单 (Esc)", self.back_to_menu),
+        ):
+            self.draw_button(Button(rect, label, action), size=20)
+            rect = rect.move(rect.width + 14, 0)
+
+    def draw_overlay(self):
+        mask = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        mask.fill((10, 12, 18, 200))
+        self.screen.blit(mask, (0, 0))
+        panel = pygame.Rect(WIDTH // 2 - 270, 220, 540, 320)
+        pygame.draw.rect(self.screen, CARD, panel, border_radius=22)
+        last_level = self.level_index + 1 >= len(LEVELS)
+        if self.overlay == "win":
+            title = "全部通关！" if last_level else "本关通过！"
+            color = GOLD
+            used = self.game.max_mistakes - self.game.mistakes
+            info = f"用时 {self.time_text()}    失误 {used} 次"
+            primary = ("返回菜单", self.back_to_menu) if last_level else ("下一关", self.next_level)
+        else:
+            title = "本关失败"
+            color = DANGER
+            info = "失误次数用完了，再试一次吧"
+            primary = ("重新开始", self.restart_level)
+        self.text(title, 46, color, center=(WIDTH // 2, 292), bold=True)
+        self.text(info, 22, MUTED, center=(WIDTH // 2, 350))
+        self.draw_button(
+            Button((WIDTH // 2 - 130, 396, 260, 58), primary[0], primary[1]),
+            size=26,
+            primary=True,
+        )
+        self.draw_button(
+            Button((WIDTH // 2 - 130, 466, 260, 50), "返回菜单", self.back_to_menu),
+            size=20,
+        )
 
     def draw_board(self):
         cell, gap, ox, oy = self.geometry()
@@ -202,10 +348,24 @@ class App:
         pygame.draw.rect(self.screen, CARD, board, border_radius=18)
         for r in range(rows):
             for c in range(cols):
-                pygame.draw.rect(self.screen, CELL, self.cell_rect(r, c), border_radius=8)
+                rect = self.cell_rect(r, c)
+                color = CELL_BLOCK if self.shakes.get((r, c)) else CELL
+                pygame.draw.rect(self.screen, color, rect, border_radius=8)
         for (r, c), direction in self.game.arrows.items():
             rect = self.cell_rect(r, c)
-            self.draw_arrow(rect.center, rect.width * 0.62, direction, ARROW_COLORS[direction])
+            ox, oy = self.shake_offset((r, c))
+            self.draw_arrow(
+                (rect.centerx + ox, rect.centery + oy),
+                rect.width * 0.62,
+                direction,
+                ARROW_COLORS[direction],
+            )
+        if self.hint and self.hint in self.game.arrows:
+            rect = self.cell_rect(*self.hint)
+            width = 3 + int(2 * (1 + math.sin(pygame.time.get_ticks() / 110)))
+            pygame.draw.rect(
+                self.screen, GOLD, rect.inflate(12, 12), width=width, border_radius=14
+            )
 
     def draw_game(self):
         self.buttons = []
@@ -220,6 +380,9 @@ class App:
                 flyer["color"],
                 flyer["alpha"],
             )
+        self.draw_buttons()
+        if self.overlay:
+            self.draw_overlay()
 
     def draw(self):
         if self.scene == "menu":
@@ -228,11 +391,20 @@ class App:
             self.draw_game()
         pygame.display.flip()
 
+    def shake_offset(self, cell):
+        """被挡住的箭头左右晃动，越接近结束幅度越小。"""
+        timer = self.shakes.get(cell)
+        if not timer:
+            return (0, 0)
+        strength = min(1.0, timer / SHAKE_TIME)
+        return (math.sin(timer * 42) * SHAKE_PIXELS * strength, 0)
+
     def click_board(self, cell):
         direction = self.game.arrows.get(cell)
         if direction is None:
             return
-        if self.game.click(cell) == "escape":
+        result = self.game.click(cell)
+        if result == "escape":
             rect = self.cell_rect(*cell)
             self.flyers.append(
                 {
@@ -244,6 +416,16 @@ class App:
                     "alpha": 255,
                 }
             )
+        elif result == "blocked":
+            self.shakes[cell] = SHAKE_TIME
+            if self.game.result == "lose":
+                self.toast = {"text": "失误次数用完了！", "color": DANGER, "timer": 2.0}
+            else:
+                self.toast = {
+                    "text": "这个箭头被挡住了，失误 -1",
+                    "color": DANGER,
+                    "timer": 1.4,
+                }
 
     def on_click(self, pos):
         for button in reversed(self.buttons):
@@ -261,16 +443,27 @@ class App:
                 self.running = False
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    self.scene = "menu"
+                    self.back_to_menu()
                 elif event.key == pygame.K_r and self.scene == "game":
-                    self.game.reset()
-                    self.flyers = []
+                    self.restart_level()
+                elif event.key == pygame.K_h:
+                    self.use_hint()
+                elif event.key == pygame.K_z:
+                    self.use_undo()
+                elif event.key in (pygame.K_RETURN, pygame.K_SPACE) and self.overlay == "win":
+                    self.next_level()
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 self.on_click(event.pos)
 
     def update(self, dt):
         if self.scene == "game" and not self.game.result:
             self.elapsed += dt
+        if self.scene == "game" and self.game.result and self.overlay is None:
+            self.overlay_timer += dt
+            if self.overlay_timer >= OVERLAY_DELAY:
+                self.overlay = self.game.result
+                if self.overlay == "win":
+                    self.unlocked = max(self.unlocked, self.level_index + 2)
         speed = 1500
         for flyer in self.flyers:
             flyer["y"] += DIRS[flyer["dir"]][0] * speed * dt
@@ -279,10 +472,22 @@ class App:
         self.flyers = [
             f for f in self.flyers if -120 < f["x"] < WIDTH + 120 and -120 < f["y"] < HEIGHT + 120
         ]
+        for cell in list(self.shakes):
+            self.shakes[cell] -= dt
+            if self.shakes[cell] <= 0:
+                del self.shakes[cell]
+        if self.toast:
+            self.toast["timer"] -= dt
+            if self.toast["timer"] <= 0:
+                self.toast = None
+        if self.hint_timer > 0:
+            self.hint_timer -= dt
+            if self.hint_timer <= 0:
+                self.hint = None
 
     def run(self):
         while self.running:
-            dt = self.clock.tick(FPS) / 1000.0
+            dt = min(self.clock.tick(FPS) / 1000.0, 0.1)
             self.handle_events()
             self.update(dt)
             self.draw()
